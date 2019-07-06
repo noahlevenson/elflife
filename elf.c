@@ -106,12 +106,24 @@ int main (int argc, char* argv[]) {
 	
 	uint32_t shstrtab_size = 1 + strlen(text_s) + 1 + strlen(data_s) + 1 + strlen(shstrtab_s) + 1;
 	char shstrtab[shstrtab_size];
-	sprintf(shstrtab, "\0%s%s%s", text_s, data_s, shstrtab_s); 				
 
+	// For safety, we initialize the shstrtab with null bytes
+	for (size_t i = 0; i < shstrtab_size; ++i) {
+		shstrtab[i] = '\0';
+	}
+
+	// Here you'd want to iterate through your data structure of section string labels, do this programmatically
+	uint32_t wptr = 1;	
+	strncpy(shstrtab + wptr, text_s, strlen(text_s));
+	wptr += strlen(text_s) + 1;
+	strncpy(shstrtab + wptr, data_s, strlen(data_s));
+	wptr += strlen(data_s) + 1;
+	strncpy(shstrtab + wptr, shstrtab_s, strlen(shstrtab_s));	
+		
 	// Step 3: Figure out how we're packing this file and cache some offsets
 	uint32_t elf_header_off = 0;
 	uint32_t pheader_off = sizeof(Elf32_Ehdr);
-	uint32_t text_off = pheader_off + sizeof(Elf32_Phdr) * 2; // TODO: replace this magic number
+	uint32_t text_off = pheader_off + (sizeof(Elf32_Phdr) * 2); // TODO: replace this magic number
 	uint32_t data_off = text_off + text_size;
 	uint32_t shstrtab_off = data_off + data_size;
 	uint32_t sheader_off = shstrtab_off + shstrtab_size; 
@@ -119,11 +131,23 @@ int main (int argc, char* argv[]) {
 	// Step 3: Construct your section header table and populate each section header	
 	Elf32_Shdr sheader_tab[4];
 
+	// Create section header for initial null entry
+	sheader_tab[0].sh_name = 0;
+	sheader_tab[0].sh_type = 0;
+	sheader_tab[0].sh_flags = 0;
+	sheader_tab[0].sh_addr = 0;
+	sheader_tab[0].sh_offset = 0;
+	sheader_tab[0].sh_size = 0;
+	sheader_tab[0].sh_link = 0;
+	sheader_tab[0].sh_info = 0;
+	sheader_tab[0].sh_addralign = 0;
+	sheader_tab[0].sh_entsize = 0;
+
 	// Create section header for .text section
 	// Here's where you'd probably want to iterate through your data structure of section names and programmatically calculate offsets
 	sheader_tab[1].sh_name = 1; // .text begins at the 1st index in shstrtab, since element 0 is a null byte
 	sheader_tab[1].sh_type = SHT_PROGBITS; // executable sections are progbits :)
-	sheader_tab[1].sh_flags = SHF_ALLOC & SHF_EXECINSTR; // these bits must be set for executable sections
+	sheader_tab[1].sh_flags = SHF_ALLOC | SHF_EXECINSTR; // these bits must be set for executable sections
 	sheader_tab[1].sh_addr = K_PROCESS_ADDR_EXEC + text_off; // Exec process memory base address seems arbitrary - for small programs, GCC uses 0x10000
 	sheader_tab[1].sh_offset = text_off;
 	sheader_tab[1].sh_size = text_size;
@@ -137,7 +161,7 @@ int main (int argc, char* argv[]) {
 	// Create section header for .data section
 	sheader_tab[2].sh_name = sheader_tab[1].sh_name + strlen(text_s) + 1; // This is how you'd calculate it in a loop
 	sheader_tab[2].sh_type = SHT_PROGBITS; // Data is also progbits :)
-	sheader_tab[2].sh_flags = SHF_WRITE & SHF_ALLOC; // these bits must be set for data sections
+	sheader_tab[2].sh_flags = SHF_WRITE | SHF_ALLOC; // these bits must be set for data sections
 	sheader_tab[2].sh_addr = K_PROCESS_ADDR_DATA + data_off; // Data process memory base address seems arbitrary - for small programs, GCC uses 0x20000
 	sheader_tab[2].sh_offset = data_off;
 	sheader_tab[2].sh_size = data_size;
@@ -166,9 +190,9 @@ int main (int argc, char* argv[]) {
 	pheader_tab[0].p_offset = elf_header_off;
 	pheader_tab[0].p_vaddr = K_PROCESS_ADDR_EXEC + elf_header_off; 
 	pheader_tab[0].p_paddr = K_PROCESS_ADDR_EXEC + elf_header_off; // On Linux systems, physical address is ignored
-	pheader_tab[0].p_filesz = data_off + data_size; // Here you'd programmatically calculate the size of the region you decided to include in this pheader
+	pheader_tab[0].p_filesz = text_off + text_size; // Here you'd programmatically calculate the size of the region you decided to include in this pheader
 	pheader_tab[0].p_memsz = pheader_tab[0].p_filesz; // Not sure about a case where mem image size != file image size?
-	pheader_tab[0].p_flags = PF_R & PF_X; // These flags must be set for your executable region - adding W would make the code self-modifiable :)
+	pheader_tab[0].p_flags = PF_R | PF_X; // These flags must be set for your executable region - adding W would make the code self-modifiable :)
 	pheader_tab[0].p_align = K_PROCESS_ALIGN;
  
 	// Create program header for second section, which is just the .data section
@@ -178,7 +202,7 @@ int main (int argc, char* argv[]) {
 	pheader_tab[1].p_paddr = K_PROCESS_ADDR_DATA + data_off; // On Linux systems, physical address is ignored
 	pheader_tab[1].p_filesz = data_size;
 	pheader_tab[1].p_memsz = pheader_tab[1].p_filesz;
-	pheader_tab[1].p_flags = PF_R & PF_W; // These flags must be set for your data region
+	pheader_tab[1].p_flags = PF_R | PF_W; // These flags must be set for your data region
 	pheader_tab[1].p_align = K_PROCESS_ALIGN;	
 	
 	// Figure some things out for your ELF header
@@ -193,11 +217,11 @@ int main (int argc, char* argv[]) {
 	
 	FILE* dest_file = fopen("./test", "w+");
 	fwrite(file_header, 1, sizeof(Elf32_Ehdr), dest_file);
-	//fwrite(&pheader_tab, 1, sizeof(pheader_tab), dest_file);
-	//fwrite(&text, 1, text_size, dest_file);
-	//fwrite(&data, 1, data_size, dest_file);
-	//fwrite(&shstrtab, 1, shstrtab_size, dest_file);
-	//fwrite(&sheader_tab, 1, sizeof(sheader_tab), dest_file); 
+	fwrite(&pheader_tab, 1, sizeof(pheader_tab), dest_file);
+	fwrite(&text, 1, text_size, dest_file);
+	fwrite(&data, 1, data_size, dest_file);
+	fwrite(&shstrtab, 1, shstrtab_size, dest_file);
+	fwrite(&sheader_tab, 1, sizeof(sheader_tab), dest_file); 
 	
 	fclose(dest_file);
 	free(file_header);
